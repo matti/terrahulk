@@ -1,6 +1,6 @@
 # terrahulk
 
-(Terragrunt)[https://github.com/gruntwork-io/terragrunt] alternative. Less opinionated and written in shell script.
+[Terragrunt](https://github.com/gruntwork-io/terragrunt) alternative. Less opinionated and written in shell script.
 
 ```
 th climb <any terraform command>
