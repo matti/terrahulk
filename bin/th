@@ -1,0 +1,242 @@
+#!/usr/bin/env sh
+set -e
+set -o pipefail
+
+if [ "$1" = "" ]; then
+  echo "USAGE:
+th climb <terraform command>
+th fall <terraform command>
+th clean terrahulk|terraform|state
+"
+  exit 1
+fi
+
+prepend() {
+  current_dir=$(pwd)
+  shortened_dir=${current_dir#$TERRAHULK_INITIAL_PWD}
+  if [ "$shortened_dir" = "" ]; then
+    shortened_dir="/"
+  fi
+  shortened_dir=".$shortened_dir"
+  $@ | while read; do echo "\033[0m$shortened_dir  $REPLY"; done
+}
+
+copy_templates() {
+  if [ -e "terrahulk.tf" ]; then
+    rm terrahulk.tf
+  fi
+  if [ -e "terrahulk.auto.tfvars" ]; then
+    rm terrahulk.auto.tfvars
+  fi
+
+  start_dir=$(pwd)
+  path_to_top="$(basename $(pwd))"
+  project="$path_to_top"
+
+  while true; do
+    cd ..
+    if [ -e "terrahulk.tf.template" ] || [ -e "terrahulk.auto.tfvars.template" ]; then
+      for template in terrahulk.tf.template terrahulk.auto.tfvars.template; do
+        if [ -e "$template" ]; then
+          target_file=$(echo $template | sed 's/.template//')
+          contents=$(cat $template)
+          echo "$contents" | sed 's/@@current_dir@@/'"$project"'/' > $path_to_top/$target_file
+        fi
+      done
+
+      cd $start_dir
+      return
+    fi
+
+    currently_in=$(pwd)
+    if [ "$currently_in" = "/" ]; then
+      cd $start_dir
+      return
+    fi
+
+    path_to_top="$(basename $(pwd))/$path_to_top"
+  done
+}
+
+init_and_select_workspace() {
+  if [ ! -d .terraform ]; then
+    prepend "terraform init"
+  fi
+
+  if [ "$WORKSPACE" != "" ]; then
+    set +e
+      workspace_exists=$(terraform workspace list | grep " $WORKSPACE")
+    set -e
+    if [ "$workspace_exists" != "" ]; then
+      if [ -d .terraform ]; then
+        echo $WORKSPACE > ".terraform/environment"  # using terraform workspace select breaks the coloring in vs code :o
+        echo "🐸  selected workspace $WORKSPACE in $(pwd)"
+      else
+        echo "🐸  no need to select workspace $WORKSPACE in $(pwd)"
+      fi
+    else
+      prepend "terraform workspace new $WORKSPACE"
+    fi
+  fi
+}
+
+if [ "$TERRAHULK_INITIAL_PWD" = "" ]; then
+  export TERRAHULK_INITIAL_PWD="$(pwd)"
+fi
+
+command=$1; shift
+case $command in
+  clean)
+    set +e
+      subject=$1; shift
+    set -e
+    case $subject in
+      terrahulk)
+        rm -rf terrahulk.tf terrahulk.auto.tfvars
+      ;;
+      terraform)
+        rm -rf .terraform
+      ;;
+      state)
+        rm -rf terraform.tfstate*
+      ;;
+      *)
+        echo "Unknown subject: $subject"
+        exit
+      ;;
+    esac
+
+    echo "🐸  $(pwd) clean from $subject"
+
+    dirs=$(find . -mindepth 1 -maxdepth 1 -type d)
+
+    for dir in $dirs; do
+      basenamed_dir=$(basename $dir)
+      case "$basenamed_dir" in
+        .*|terraform*|modules)
+          continue
+        ;;
+      esac
+      cd $basenamed_dir; $0 clean $subject
+      cd ..
+    done
+  ;;
+  exec)
+    command="terraform $@"
+    echo "🐸  $command in $(pwd)"
+
+    copy_templates
+    init_and_select_workspace
+
+    tf_files=$(find . -mindepth 1 -maxdepth 1 -name "*.tf")
+    if [ "$tf_files" = "" ]; then
+      prepend "echo no *.tf files found."
+      exit 0
+    fi
+
+    prepend "$command"
+  ;;
+  climb)
+    $0 exec $@
+
+    dirs=$(find . -mindepth 1 -maxdepth 1 -type d)
+
+    pid_dirs=""
+    pids=""
+    for dir in $dirs; do
+      basenamed_dir=$(basename $dir)
+      case "$basenamed_dir" in
+        .*|terraform*|modules)
+          continue
+        ;;
+      esac
+
+      (cd $basenamed_dir; $0 exec $@) &
+      pid=$!
+      pids="$pids $pid"
+      pid_dirs="$pid_dirs\n$pid=$(pwd)/$basenamed_dir"
+    done
+
+    failed_pids=""
+    for pid in $pids; do
+      set +e
+        wait $pid
+        exitcode=$?
+      set -e
+      if [ "$exitcode" != 0 ]; then
+        failed_pids="$failed_pids $pid"
+      fi
+    done
+
+    if [ "$failed_pids" != "" ]; then
+      echo "
+
+💀  Following projects failed:"
+      for failed_pid in $failed_pids; do
+        echo "$pid_dirs" | grep $failed_pid | cut -d= -f2
+      done
+      exit 1
+    fi
+
+    pids=""
+    for dir in $dirs; do
+      basenamed_dir=$(basename $dir)
+      case "$basenamed_dir" in
+        .*|terraform*|modules)
+          continue
+        ;;
+      esac
+      (cd $dir; $0 climb $@) &
+      pids="$pids $!"
+    done
+
+    for pid in $pids; do
+      set +e
+        wait $pid
+      set -e
+    done
+  ;;
+  fall)
+    dirs=$(find . -mindepth 1 -maxdepth 1 -type d)
+
+    pid_dirs=""
+    pids=""
+    for dir in $dirs; do
+      basenamed_dir=$(basename $dir)
+      case "$basenamed_dir" in
+        .*|terraform*|modules)
+          continue
+        ;;
+      esac
+
+      (cd $basenamed_dir; $0 fall $@) &
+      pid=$!
+      pids="$pids $pid"
+      pid_dirs="$pid_dirs\n$pid=$(pwd)/$basenamed_dir"
+    done
+
+    failed_pids=""
+    for pid in $pids; do
+      set +e
+        wait $pid
+        exitcode=$?
+      set -e
+
+      if [ "$exitcode" != 0 ]; then
+        failed_pids="$failed_pids $pid"
+      fi
+    done
+
+    if [ "$failed_pids" != "" ]; then
+      echo "
+
+💀  Following projects failed:"
+      for failed_pid in $failed_pids; do
+        echo "$pid_dirs" | grep $failed_pid | cut -d= -f2
+      done
+      exit 1
+    fi
+
+    $0 exec $@
+  ;;
+esac

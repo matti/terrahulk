@@ -1,0 +1,8 @@
+variable "shared_variable" {}
+
+output "interpolation" {
+  value = "current_dir: @@current_dir@@"
+}
+output "variables" {
+  value = "${var.shared_variable}"
+}
