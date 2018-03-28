@@ -4,7 +4,7 @@
 
 ```
 th climb <any terraform command>
-  - Finds first terraberg.tf.template and terraberg.auto.tfvars.template files
+  - Finds first terrahulk.tf.template and terrahulk.auto.tfvars.template files
     from parent dirs. Interpolates and copies them to all subfolders.
   - Runs terraform command in current dir and all sub dirs.
   - Intended use: $ tb climb apply -auto-approve
